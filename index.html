@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Străzi – OpenLayers</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@latest/ol.css">
+  <style>
+    html, body, #map { height: 100%; margin: 0; }
+    #controls {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 1000;
+      background: rgba(255,255,255,0.9);
+      padding: 8px;
+      border-radius: 8px;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      font-size: 14px;
+    }
+    #attributeSelect { width: 260px; }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <div style="margin-bottom:6px;">Color by:</div>
+    <select id="attributeSelect">
+      <option value="ZONĂ FISCALĂ">Zonă fiscală</option>
+      <option value="ZONĂ FISCALĂ VECHE">Zonă fiscală veche</option>
+      <option value="STANDARD CARTIER">Standard cartier</option>
+      <option value="TIP CAROSABIL">Tip carosabil</option>
+      <option value="GRAD DE POLUARE">Grad de poluare</option>
+    </select>
+  </div>
+
+  <div id="map"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/ol@latest/dist/ol.js"></script>
+  <script>
+    let selectedAttribute = 'ZONĂ FISCALĂ';
+
+    // Simple palette for common A/B/C/D-like fields
+    const gradeColors = {
+      'A': '#1a9641',
+      'B': '#a6d96a',
+      'C': '#fdae61',
+      'D': '#d7191c',
+      'C/D': '#f46d43'
+    };
+
+    // Cache styles for performance
+    const styleCache = new Map();
+
+    function styleForColor(color) {
+      if (!styleCache.has(color)) {
+        styleCache.set(color, new ol.style.Style({
+          stroke: new ol.style.Stroke({ color, width: 3 })
+        }));
+      }
+      return styleCache.get(color);
+    }
+
+    function styleFeature(feature) {
+      const v = feature.get(selectedAttribute);
+
+      // Use palette if matches, otherwise hash to a deterministic color-ish fallback
+      let color = gradeColors[v];
+      if (!color) {
+        // fallback: stable grayscale-ish based on string
+        const s = String(v ?? '');
+        let hash = 0;
+        for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) >>> 0;
+        const g = 80 + (hash % 120); // 80..199
+        color = `rgb(${g},${g},${g})`;
+      }
+      return styleForColor(color);
+    }
+
+    const streetsLayer = new ol.layer.Vector({
+      source: new ol.source.Vector({
+        url: './strazi_impozite.geojson',
+        format: new ol.format.GeoJSON()
+      }),
+      style: styleFeature
+    });
+
+    const map = new ol.Map({
+      target: 'map',
+      layers: [
+        new ol.layer.Tile({ source: new ol.source.OSM() }),
+        streetsLayer
+      ],
+      view: new ol.View({
+        center: ol.proj.fromLonLat([23.6, 46.77]), // initial view (Cluj area)
+        zoom: 12
+      })
+    });
+
+    // Fit to data once loaded
+    streetsLayer.getSource().on('change', () => {
+      if (streetsLayer.getSource().getState() === 'ready') {
+        const extent = streetsLayer.getSource().getExtent();
+        map.getView().fit(extent, { padding: [30,30,30,30] });
+      }
+    });
+
+    // UI hook
+    document.getElementById('attributeSelect').addEventListener('change', (e) => {
+      selectedAttribute = e.target.value;
+      streetsLayer.changed();
+    });
+  </script>
+</body>
+</html>
