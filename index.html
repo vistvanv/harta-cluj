@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="ro">
 <head>
   <meta charset="utf-8" />
   <title>Străzi – OpenLayers</title>
@@ -8,39 +8,59 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@latest/ol.css">
   <style>
     html, body, #map { height: 100%; margin: 0; }
+
     #controls {
       position: absolute;
       top: 10px;
       left: 10px;
       z-index: 1000;
-      background: rgba(255,255,255,0.9);
-      padding: 8px;
-      border-radius: 8px;
+      background: rgba(255,255,255,0.92);
+      padding: 10px;
+      border-radius: 10px;
+      box-shadow: 0 1px 8px rgba(0,0,0,0.18);
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
       font-size: 14px;
+      min-width: 280px;
     }
-    #attributeSelect { width: 260px; }
+    #controls label {
+      display: block;
+      margin-bottom: 6px;
+      font-weight: 600;
+    }
+    #attributeSelect {
+      width: 100%;
+      padding: 6px 8px;
+      border-radius: 8px;
+      border: 1px solid rgba(0,0,0,0.15);
+      background: white;
+      font-size: 14px;
+    }
+    #hint {
+      margin-top: 8px;
+      font-size: 12px;
+      opacity: 0.75;
+    }
   </style>
 </head>
 <body>
   <div id="controls">
-    <div style="margin-bottom:6px;">Color by:</div>
-    <select id="attributeSelect">
-      <option value="ZONĂ FISCALĂ">Zonă fiscală</option>
-      <option value="ZONĂ FISCALĂ VECHE">Zonă fiscală veche</option>
-      <option value="STANDARD CARTIER">Standard cartier</option>
-      <option value="TIP CAROSABIL">Tip carosabil</option>
-      <option value="GRAD DE POLUARE">Grad de poluare</option>
-    </select>
+    <label for="attributeSelect">Color by</label>
+    <!-- Options will be auto-populated from GeoJSON -->
+    <select id="attributeSelect"></select>
+    <div id="hint">Tip: hover peste stradă pentru detalii.</div>
   </div>
 
   <div id="map"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/ol@latest/dist/ol.js"></script>
   <script>
-    let selectedAttribute = 'ZONĂ FISCALĂ';
+    // Selected attribute (will be set after data loads)
+    let selectedAttribute = null;
 
-    // Simple palette for common A/B/C/D-like fields
+    // Prefer these fields for "street name" in tooltip (fallback chain)
+    const NAME_FIELDS = ['STRADA', 'DENUMIRE', 'Nume', 'name', 'Name'];
+
+    // Nice palette for common A/B/C/D-like categories
     const gradeColors = {
       'A': '#1a9641',
       'B': '#a6d96a',
@@ -51,7 +71,6 @@
 
     // Cache styles for performance
     const styleCache = new Map();
-
     function styleForColor(color) {
       if (!styleCache.has(color)) {
         styleCache.set(color, new ol.style.Style({
@@ -61,19 +80,23 @@
       return styleCache.get(color);
     }
 
+    // Stable color from any value (categorical): hash -> HSL
+    function colorFromValue(v) {
+      const s = String(v ?? '—');
+      let hash = 0;
+      for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) >>> 0;
+      const hue = hash % 360;
+      return `hsl(${hue} 65% 45%)`;
+    }
+
     function styleFeature(feature) {
+      if (!selectedAttribute) {
+        return styleForColor('#888');
+      }
       const v = feature.get(selectedAttribute);
 
-      // Use palette if matches, otherwise hash to a deterministic color-ish fallback
-      let color = gradeColors[v];
-      if (!color) {
-        // fallback: stable grayscale-ish based on string
-        const s = String(v ?? '');
-        let hash = 0;
-        for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) >>> 0;
-        const g = 80 + (hash % 120); // 80..199
-        color = `rgb(${g},${g},${g})`;
-      }
+      // If it matches A/B/C/D palette use it, otherwise use stable HSL
+      const color = (v in gradeColors) ? gradeColors[v] : colorFromValue(v);
       return styleForColor(color);
     }
 
@@ -92,21 +115,98 @@
         streetsLayer
       ],
       view: new ol.View({
-        center: ol.proj.fromLonLat([23.6, 46.77]), // initial view (Cluj area)
+        center: ol.proj.fromLonLat([23.6, 46.77]),
         zoom: 12
       })
     });
 
-    // Fit to data once loaded
+    // --- Hover tooltip ---
+    const tooltip = document.createElement('div');
+    tooltip.style.position = 'absolute';
+    tooltip.style.background = 'rgba(255,255,255,0.95)';
+    tooltip.style.padding = '6px 8px';
+    tooltip.style.borderRadius = '10px';
+    tooltip.style.boxShadow = '0 1px 10px rgba(0,0,0,0.2)';
+    tooltip.style.fontFamily = 'system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+    tooltip.style.fontSize = '13px';
+    tooltip.style.pointerEvents = 'none';
+    tooltip.style.transform = 'translate(10px, 10px)';
+    tooltip.style.display = 'none';
+    document.body.appendChild(tooltip);
+
+    function getStreetName(feature) {
+      for (const k of NAME_FIELDS) {
+        const val = feature.get(k);
+        if (val !== undefined && val !== null && String(val).trim() !== '') return String(val);
+      }
+      return '(fără nume)';
+    }
+
+    map.on('pointermove', (evt) => {
+      const feature = map.forEachFeatureAtPixel(evt.pixel, f => f);
+      if (!feature) {
+        tooltip.style.display = 'none';
+        return;
+      }
+
+      const streetName = getStreetName(feature);
+      const v = selectedAttribute ? feature.get(selectedAttribute) : null;
+
+      tooltip.innerHTML = `
+        <div><b>${streetName}</b></div>
+        <div>${selectedAttribute ?? 'atribut'}: <b>${(v ?? '—')}</b></div>
+      `;
+      tooltip.style.left = `${evt.originalEvent.pageX}px`;
+      tooltip.style.top  = `${evt.originalEvent.pageY}px`;
+      tooltip.style.display = 'block';
+    });
+
+    // --- Populate dropdown from GeoJSON attributes + fit map ---
+    const selectEl = document.getElementById('attributeSelect');
+
     streetsLayer.getSource().on('change', () => {
-      if (streetsLayer.getSource().getState() === 'ready') {
-        const extent = streetsLayer.getSource().getExtent();
+      if (streetsLayer.getSource().getState() !== 'ready') return;
+
+      // Fit to data
+      const extent = streetsLayer.getSource().getExtent();
+      if (extent && extent.every(Number.isFinite)) {
         map.getView().fit(extent, { padding: [30,30,30,30] });
+      }
+
+      // Build attribute list from first feature (once)
+      if (selectEl.options.length === 0) {
+        const first = streetsLayer.getSource().getFeatures()[0];
+        if (!first) return;
+
+        const keys = Object.keys(first.getProperties())
+          .filter(k => k !== 'geometry')
+          .sort((a, b) => a.localeCompare(b, 'ro'));
+
+        for (const k of keys) {
+          const opt = document.createElement('option');
+          opt.value = k;
+          opt.textContent = k;
+          selectEl.appendChild(opt);
+        }
+
+        // Choose a sensible default if present
+        const preferred = [
+          'ZONĂ FISCALĂ',
+          'ZONĂ FISCALĂ VECHE',
+          'STANDARD CARTIER',
+          'TIP CAROSABIL',
+          'GRAD DE POLUARE'
+        ];
+        selectedAttribute = preferred.find(p => keys.includes(p)) ?? keys[0] ?? null;
+        if (selectedAttribute) {
+          selectEl.value = selectedAttribute;
+          streetsLayer.changed();
+        }
       }
     });
 
-    // UI hook
-    document.getElementById('attributeSelect').addEventListener('change', (e) => {
+    // UI change -> restyle
+    selectEl.addEventListener('change', (e) => {
       selectedAttribute = e.target.value;
       streetsLayer.changed();
     });
