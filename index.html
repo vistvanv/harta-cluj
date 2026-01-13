@@ -2,7 +2,7 @@
 <html lang="ro">
 <head>
   <meta charset="utf-8" />
-  <title>Străzi – OpenLayers</title>
+  <title>Străzi – OpenLayers</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@latest/ol.css">
@@ -20,14 +20,17 @@
       box-shadow: 0 1px 8px rgba(0,0,0,0.18);
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
       font-size: 14px;
-      min-width: 280px;
+      min-width: 300px;
+      max-width: 340px;
     }
+
     #controls label {
       display: block;
       margin-bottom: 6px;
       font-weight: 600;
     }
-    #attributeSelect {
+
+    select {
       width: 100%;
       padding: 6px 8px;
       border-radius: 8px;
@@ -35,6 +38,9 @@
       background: white;
       font-size: 14px;
     }
+
+    #basemapSelect { margin-bottom: 10px; }
+
     #hint {
       margin-top: 8px;
       font-size: 12px;
@@ -44,9 +50,16 @@
 </head>
 <body>
   <div id="controls">
+    <label for="basemapSelect">Basemap</label>
+    <select id="basemapSelect">
+      <option value="carto_light" selected>CARTO Positron (light)</option>
+      <option value="carto_dark">CARTO Dark Matter</option>
+      <option value="osm">OpenStreetMap (color)</option>
+    </select>
+
     <label for="attributeSelect">Color by</label>
-    <!-- Options will be auto-populated from GeoJSON -->
     <select id="attributeSelect"></select>
+
     <div id="hint">Tip: hover peste stradă pentru detalii.</div>
   </div>
 
@@ -54,13 +67,27 @@
 
   <script src="https://cdn.jsdelivr.net/npm/ol@latest/dist/ol.js"></script>
   <script>
-    // Selected attribute (will be set after data loads)
-    let selectedAttribute = null;
+    // ---- Config: keep ONLY these attributes in the dropdown ----
+    // IMPORTANT: keys must match your GeoJSON property names EXACTLY.
+    // I kept Romanian diacritics where you used them earlier (e.g. ZONĂ FISCALĂ).
+    const ALLOWED_ATTRIBUTES = [
+      'STANDARD CARTIER',
+      'DISTANȚA FAȚĂ DE CENTRU',
+      'TIP CAROSABIL',
+      'GRAD DE DOTARE',
+      'CARACTERISTICI GEO',
+      'RESTRICTII PUG',
+      'GRAD DE POLUARE',
+      'ZONĂ FISCALĂ'
+    ];
 
-    // Prefer these fields for "street name" in tooltip (fallback chain)
+    // Selected attribute
+    let selectedAttribute = 'ZONĂ FISCALĂ';
+
+    // Street name fields for tooltip (fallback chain)
     const NAME_FIELDS = ['STRADA', 'DENUMIRE', 'Nume', 'name', 'Name'];
 
-    // Nice palette for common A/B/C/D-like categories
+    // A/B/C/D palette for common zoning-like categories
     const gradeColors = {
       'A': '#1a9641',
       'B': '#a6d96a',
@@ -90,16 +117,12 @@
     }
 
     function styleFeature(feature) {
-      if (!selectedAttribute) {
-        return styleForColor('#888');
-      }
       const v = feature.get(selectedAttribute);
-
-      // If it matches A/B/C/D palette use it, otherwise use stable HSL
       const color = (v in gradeColors) ? gradeColors[v] : colorFromValue(v);
       return styleForColor(color);
     }
 
+    // Vector layer
     const streetsLayer = new ol.layer.Vector({
       source: new ol.source.Vector({
         url: './strazi_impozite.geojson',
@@ -108,10 +131,34 @@
       style: styleFeature
     });
 
+    // Basemaps (Option 1 grayscale + OSM color)
+    const basemaps = {
+      carto_light: new ol.layer.Tile({
+        visible: true,
+        source: new ol.source.XYZ({
+          url: 'https://{a-d}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+          attributions: '© OpenStreetMap contributors © CARTO'
+        })
+      }),
+      carto_dark: new ol.layer.Tile({
+        visible: false,
+        source: new ol.source.XYZ({
+          url: 'https://{a-d}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+          attributions: '© OpenStreetMap contributors © CARTO'
+        })
+      }),
+      osm: new ol.layer.Tile({
+        visible: false,
+        source: new ol.source.OSM()
+      })
+    };
+
     const map = new ol.Map({
       target: 'map',
       layers: [
-        new ol.layer.Tile({ source: new ol.source.OSM() }),
+        basemaps.carto_light,
+        basemaps.carto_dark,
+        basemaps.osm,
         streetsLayer
       ],
       view: new ol.View({
@@ -120,7 +167,7 @@
       })
     });
 
-    // --- Hover tooltip ---
+    // ---- Tooltip on hover ----
     const tooltip = document.createElement('div');
     tooltip.style.position = 'absolute';
     tooltip.style.background = 'rgba(255,255,255,0.95)';
@@ -148,64 +195,66 @@
         tooltip.style.display = 'none';
         return;
       }
-
       const streetName = getStreetName(feature);
-      const v = selectedAttribute ? feature.get(selectedAttribute) : null;
+      const v = feature.get(selectedAttribute);
 
       tooltip.innerHTML = `
         <div><b>${streetName}</b></div>
-        <div>${selectedAttribute ?? 'atribut'}: <b>${(v ?? '—')}</b></div>
+        <div>${selectedAttribute}: <b>${(v ?? '—')}</b></div>
       `;
       tooltip.style.left = `${evt.originalEvent.pageX}px`;
       tooltip.style.top  = `${evt.originalEvent.pageY}px`;
       tooltip.style.display = 'block';
     });
 
-    // --- Populate dropdown from GeoJSON attributes + fit map ---
+    // ---- Basemap selector wiring ----
+    document.getElementById('basemapSelect').addEventListener('change', (e) => {
+      const chosen = e.target.value;
+      for (const [key, layer] of Object.entries(basemaps)) {
+        layer.setVisible(key === chosen);
+      }
+    });
+
+    // ---- Attribute selector: ONLY allowed list, but skip ones not present in data ----
     const selectEl = document.getElementById('attributeSelect');
 
     streetsLayer.getSource().on('change', () => {
       if (streetsLayer.getSource().getState() !== 'ready') return;
 
-      // Fit to data
+      // Fit to data once loaded
       const extent = streetsLayer.getSource().getExtent();
       if (extent && extent.every(Number.isFinite)) {
         map.getView().fit(extent, { padding: [30,30,30,30] });
       }
 
-      // Build attribute list from first feature (once)
-      if (selectEl.options.length === 0) {
-        const first = streetsLayer.getSource().getFeatures()[0];
-        if (!first) return;
+      // Populate dropdown once
+      if (selectEl.options.length > 0) return;
 
-        const keys = Object.keys(first.getProperties())
-          .filter(k => k !== 'geometry')
-          .sort((a, b) => a.localeCompare(b, 'ro'));
+      const first = streetsLayer.getSource().getFeatures()[0];
+      if (!first) return;
 
-        for (const k of keys) {
-          const opt = document.createElement('option');
-          opt.value = k;
-          opt.textContent = k;
-          selectEl.appendChild(opt);
-        }
+      const props = first.getProperties();
+      const available = ALLOWED_ATTRIBUTES.filter(k => Object.prototype.hasOwnProperty.call(props, k));
 
-        // Choose a sensible default if present
-        const preferred = [
-          'ZONĂ FISCALĂ',
-          'ZONĂ FISCALĂ VECHE',
-          'STANDARD CARTIER',
-          'TIP CAROSABIL',
-          'GRAD DE POLUARE'
-        ];
-        selectedAttribute = preferred.find(p => keys.includes(p)) ?? keys[0] ?? null;
-        if (selectedAttribute) {
-          selectEl.value = selectedAttribute;
-          streetsLayer.changed();
-        }
+      // If none match exactly (usually diacritics / naming), fall back to showing the allowed list anyway
+      // so you can see what doesn't match and adjust keys.
+      const keysToShow = available.length ? available : ALLOWED_ATTRIBUTES;
+
+      for (const k of keysToShow) {
+        const opt = document.createElement('option');
+        opt.value = k;
+        opt.textContent = k;
+        selectEl.appendChild(opt);
       }
+
+      // Default selection
+      if (!keysToShow.includes(selectedAttribute)) {
+        selectedAttribute = keysToShow[0];
+      }
+      selectEl.value = selectedAttribute;
+      streetsLayer.changed();
     });
 
-    // UI change -> restyle
     selectEl.addEventListener('change', (e) => {
       selectedAttribute = e.target.value;
       streetsLayer.changed();
