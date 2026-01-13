@@ -21,13 +21,13 @@
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
       font-size: 14px;
       min-width: 300px;
-      max-width: 340px;
+      max-width: 360px;
     }
 
     #controls label {
       display: block;
       margin-bottom: 6px;
-      font-weight: 600;
+      font-weight: 700;
     }
 
     select {
@@ -40,12 +40,22 @@
     }
 
     #basemapSelect { margin-bottom: 10px; }
+    #attributeSelect { margin-bottom: 10px; }
 
     #hint {
       margin-top: 8px;
       font-size: 12px;
       opacity: 0.75;
     }
+
+    /* Legend */
+    #legendTitle { font-weight: 800; margin: 8px 0 6px; }
+    .legendItem { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; }
+    .swatch { width: 14px; height: 14px; border-radius: 4px; margin-top: 2px; border: 1px solid rgba(0,0,0,0.15); flex: 0 0 14px; }
+    .legendText { line-height: 1.25; }
+    .legendCode { font-weight: 800; margin-right: 6px; }
+    .legendDesc { opacity: 0.92; }
+    .legendNote { font-size: 12px; opacity: 0.75; margin-top: 6px; }
   </style>
 </head>
 <body>
@@ -60,6 +70,8 @@
     <label for="attributeSelect">Color by</label>
     <select id="attributeSelect"></select>
 
+    <div id="legend"></div>
+
     <div id="hint">Tip: hover peste stradă pentru detalii.</div>
   </div>
 
@@ -68,8 +80,8 @@
   <script src="https://cdn.jsdelivr.net/npm/ol@latest/dist/ol.js"></script>
   <script>
     // ---- Config: keep ONLY these attributes in the dropdown ----
-    // IMPORTANT: keys must match your GeoJSON property names EXACTLY.
-    // I kept Romanian diacritics where you used them earlier (e.g. ZONĂ FISCALĂ).
+    // NOTE: keys must match your GeoJSON property names EXACTLY.
+    // The code also normalizes diacritics for the legend description mapping.
     const ALLOWED_ATTRIBUTES = [
       'STANDARD CARTIER',
       'DISTANȚA FAȚĂ DE CENTRU',
@@ -81,13 +93,25 @@
       'ZONĂ FISCALĂ'
     ];
 
-    // Selected attribute
+    // Preferred default if present
+    const PREFERRED_DEFAULTS = [
+      'ZONĂ FISCALĂ',
+      'STANDARD CARTIER',
+      'DISTANȚA FAȚĂ DE CENTRU',
+      'TIP CAROSABIL',
+      'GRAD DE DOTARE',
+      'CARACTERISTICI GEO',
+      'RESTRICTII PUG',
+      'GRAD DE POLUARE'
+    ];
+
+    // Selected attribute (will be set after data loads)
     let selectedAttribute = 'ZONĂ FISCALĂ';
 
-    // Street name fields for tooltip (fallback chain)
+    // Prefer these fields for "street name" in tooltip (fallback chain)
     const NAME_FIELDS = ['STRADA', 'DENUMIRE', 'Nume', 'name', 'Name'];
 
-    // A/B/C/D palette for common zoning-like categories
+    // A/B/C/D palette
     const gradeColors = {
       'A': '#1a9641',
       'B': '#a6d96a',
@@ -95,6 +119,92 @@
       'D': '#d7191c',
       'C/D': '#f46d43'
     };
+
+    // ---- Criterion descriptions (legend text) ----
+    const CRITERIA_INFO = {
+      'STANDARD CARTIER': {
+        title: 'C1 – Standardul de zonă',
+        grades: {
+          'A': 'zona centrului istoric, centrală, de maximă atractivitate',
+          'B': 'zona mediană, de atractivitate medie',
+          'C': 'zona de atractivitate redusă',
+          'D': 'zona neatractivă sau în extinderea intravilanului'
+        }
+      },
+      'DISTANȚA FAȚĂ DE CENTRU': {
+        title: 'C2 – Distanța față de centrul municipiului',
+        grades: {
+          'A': 'zona centrală',
+          'B': 'zona mediană',
+          'C': 'zona marginală',
+          'D': 'zona periferică și în extinderea intravilanului'
+        }
+      },
+      'TIP CAROSABIL': {
+        title: 'C3 – Tipul drumului de acces la teren',
+        grades: {
+          'A': 'stradă modernizată',
+          'B': 'stradă asfaltată',
+          'C': 'stradă pietruită',
+          'D': 'drum balastat sau de câmp'
+        }
+      },
+      'GRAD DE DOTARE': {
+        title: 'C4 – Gradul de echipare cu utilități a zonei',
+        grades: {
+          'A': 'echipare cu toate rețelele și transport în comun',
+          'B': 'echipare cu toate rețelele și la distanță mică față de linia de transport în comun',
+          'C': 'echipare cu toate rețelele și la distanță medie față de linia de transport în comun',
+          'D': 'echipare cu rețele edilitare, fără canalizare / departe de linia de transport în comun (sau echipare redusă)'
+        }
+      },
+      'CARACTERISTICI GEO': {
+        title: 'C5 – Caracteristicile geotehnice ale zonei',
+        grades: {
+          'A': 'terenuri normale bune de fundare',
+          'D': 'terenuri dificile (alunecări, torenți, pante accentuate, zone mlaștinoase), neapte pentru construcții sau care necesită măsuri speciale de fundare'
+        }
+      },
+      'RESTRICTII PUG': {
+        title: 'C6 – Restricții impuse de PUG',
+        grades: {
+          'A': 'pentru funcțiuni comerciale',
+          'D': 'pentru funcțiuni incompatibile'
+        }
+      },
+      'GRAD DE POLUARE': {
+        title: 'C7 – Gradul de poluare cu reziduuri și noxe a zonei',
+        grades: {
+          'A': 'fără poluare',
+          'B': 'nivel mediu (praf, gaze de eșapament)',
+          'C': 'poluare industrială accentuată',
+          'D': 'poluare fonică accentuată (zonă afectată de aeroport)'
+        }
+      },
+      'ZONĂ FISCALĂ': {
+        title: 'Zonă fiscală',
+        grades: {
+          'A': 'zonă A',
+          'B': 'zonă B',
+          'C': 'zonă C',
+          'D': 'zonă D'
+        }
+      }
+    };
+
+    function normKey(s) {
+      return String(s ?? '')
+        .trim()
+        .toUpperCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove diacritics
+        .replace(/\s+/g, ' ');
+    }
+
+    // Normalized criteria mapping
+    const CRITERIA_INFO_NORM = {};
+    for (const [k, v] of Object.entries(CRITERIA_INFO)) {
+      CRITERIA_INFO_NORM[normKey(k)] = v;
+    }
 
     // Cache styles for performance
     const styleCache = new Map();
@@ -195,6 +305,7 @@
         tooltip.style.display = 'none';
         return;
       }
+
       const streetName = getStreetName(feature);
       const v = feature.get(selectedAttribute);
 
@@ -215,13 +326,72 @@
       }
     });
 
+    // ---- Legend ----
+    const legendEl = document.getElementById('legend');
+
+    function updateLegend() {
+      if (!legendEl) return;
+      if (!selectedAttribute) {
+        legendEl.innerHTML = '';
+        return;
+      }
+
+      const info = CRITERIA_INFO_NORM[normKey(selectedAttribute)];
+      const features = streetsLayer.getSource().getFeatures();
+
+      // unique values in data for selected attribute
+      const values = new Set();
+      for (const f of features) {
+        const v = f.get(selectedAttribute);
+        if (v !== undefined && v !== null && String(v).trim() !== '') values.add(String(v));
+      }
+
+      const order = ['A','B','C','D'];
+      const hasABCD = order.some(g => values.has(g));
+
+      let html = '';
+      html += `<div id="legendTitle">${info?.title ?? selectedAttribute}</div>`;
+
+      if (info?.grades) {
+        const gradesToShow = Object.keys(info.grades);
+        for (const g of gradesToShow) {
+          if (hasABCD && !values.has(g)) continue;
+          const color = gradeColors[g] || colorFromValue(g);
+          html += `
+            <div class="legendItem">
+              <div class="swatch" style="background:${color};"></div>
+              <div class="legendText">
+                <span class="legendCode">${g}</span>
+                <span class="legendDesc">${info.grades[g]}</span>
+              </div>
+            </div>
+          `;
+        }
+        html += `<div class="legendNote">Legendă pentru criteriul selectat (conform baremurilor).</div>`;
+      } else {
+        const sorted = Array.from(values).sort((a,b) => a.localeCompare(b, 'ro')).slice(0, 12);
+        for (const v of sorted) {
+          const color = (v in gradeColors) ? gradeColors[v] : colorFromValue(v);
+          html += `
+            <div class="legendItem">
+              <div class="swatch" style="background:${color};"></div>
+              <div class="legendText">${v}</div>
+            </div>
+          `;
+        }
+        if (values.size > 12) html += `<div class="legendNote">+ încă ${values.size - 12} valori…</div>`;
+      }
+
+      legendEl.innerHTML = html;
+    }
+
     // ---- Attribute selector: ONLY allowed list, but skip ones not present in data ----
     const selectEl = document.getElementById('attributeSelect');
 
     streetsLayer.getSource().on('change', () => {
       if (streetsLayer.getSource().getState() !== 'ready') return;
 
-      // Fit to data once loaded
+      // Fit to data
       const extent = streetsLayer.getSource().getExtent();
       if (extent && extent.every(Number.isFinite)) {
         map.getView().fit(extent, { padding: [30,30,30,30] });
@@ -234,10 +404,11 @@
       if (!first) return;
 
       const props = first.getProperties();
+
+      // filter by exact property match
       const available = ALLOWED_ATTRIBUTES.filter(k => Object.prototype.hasOwnProperty.call(props, k));
 
-      // If none match exactly (usually diacritics / naming), fall back to showing the allowed list anyway
-      // so you can see what doesn't match and adjust keys.
+      // If none match exactly (likely diacritics differences), show allowed list anyway
       const keysToShow = available.length ? available : ALLOWED_ATTRIBUTES;
 
       for (const k of keysToShow) {
@@ -247,17 +418,20 @@
         selectEl.appendChild(opt);
       }
 
-      // Default selection
-      if (!keysToShow.includes(selectedAttribute)) {
-        selectedAttribute = keysToShow[0];
+      // Choose default from preferred list
+      selectedAttribute = PREFERRED_DEFAULTS.find(p => keysToShow.includes(p)) ?? keysToShow[0] ?? null;
+
+      if (selectedAttribute) {
+        selectEl.value = selectedAttribute;
+        streetsLayer.changed();
+        updateLegend();
       }
-      selectEl.value = selectedAttribute;
-      streetsLayer.changed();
     });
 
     selectEl.addEventListener('change', (e) => {
       selectedAttribute = e.target.value;
       streetsLayer.changed();
+      updateLegend();
     });
   </script>
 </body>
